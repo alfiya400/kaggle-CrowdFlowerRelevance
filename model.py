@@ -18,6 +18,9 @@ from sklearn.cross_validation import train_test_split
 import time
 import subprocess
 import csv
+from sklearn.cluster import MeanShift
+from sklearn.pipeline import Pipeline
+
 
 def time_passed(start):
     return round((time.time() - start) / 60)
@@ -191,6 +194,12 @@ scorer = make_scorer(kappa, greater_is_better=True, weights="quadratic")
 
 
 class DataTransformer(BaseEstimator, TransformerMixin):
+    def __init__(self, columns, alpha=0.7, correction=True, bandwidth=0.25):
+        self.columns = columns
+        self.alpha = alpha
+        self.correction = correction
+        self.bandwidth = bandwidth
+
     def __word_processor(self, word):
         #     if not ENCHANT_DICT.check(word):
         #         suggestions = ENCHANT_DICT.suggest(word)
@@ -199,10 +208,13 @@ class DataTransformer(BaseEstimator, TransformerMixin):
         #         word_ = word
 
         #     word_ = STEMMER.stem(word_.split("'")[0])
-        return word
+        return word.replace("-", "")
 
     def __correction(self, r):
-        return r if r > 0.5 else 0
+        if self.correction:
+            return r if r > 0.5 else 0
+        else:
+            return r
 
     def __matching_rate(self, x):
         wordsProcessor = np.vectorize(self.__word_processor)
@@ -215,30 +227,57 @@ class DataTransformer(BaseEstimator, TransformerMixin):
         tokens = self.tokenizer(x["product_description"])
         product_descr = wordsProcessor(tokens) if tokens else None
 
-        query_title_match = query_title_ratio = query_title_intersection = -1
-        query_descr_match = query_descr_ratio = query_descr_intersection = -1
+        title_edit_dist = title_intersection = -1
+        descr_edit_dist = descr_intersection = -1
+        all_edit_dist = all_intersection = -1
 
+        n = len(query)
+        query_set = set(query)
         if product_title is not None:
-            query_title_ratio = sum(self.__correction(max([SequenceMatcher(None, w, w1).ratio() for w1 in product_title])) for w in query)
-            query_title_match = float(query_title_ratio) / len(query)
-            query_title_intersection = float(len(set(query).intersection(set(product_title)))) / len(query)
+            product_title_set = set(product_title)
+            query_title_ratio = [self.__correction(max([SequenceMatcher(None, w, w1).ratio() for w1 in product_title])) for w in query]
+            title_edit_dist = float(sum(query_title_ratio)) / n
+            title_intersection = float(len(query_set.intersection(product_title_set))) / n
 
         if product_descr is not None:
-            query_descr_ratio = sum(self.__correction(max([SequenceMatcher(None, w, w1).ratio() for w1 in product_descr])) for w in query)
-            query_descr_match = float(query_descr_ratio) / len(query)
-            query_descr_intersection = float(len(set(query).intersection(set(product_descr)))) / len(query)
+            product_descr_set = set(product_descr)
+            query_descr_ratio = [self.__correction(max([SequenceMatcher(None, w, w1).ratio() for w1 in product_descr])) for w in query]
+            descr_edit_dist = float(sum(query_descr_ratio)) / n
+            descr_intersection = float(len(query_set.intersection(product_descr_set))) / n
 
-        return pd.Series(dict(query_title_match=query_title_match,
-                              query_description_match=query_descr_match,
-                              query_title_intersection=query_title_intersection,
-                              query_descr_intersection=query_descr_intersection))
+        if product_title is not None and product_descr is not None:
+            ratio = [max(x1, x2) for x1, x2 in zip(query_title_ratio, query_descr_ratio)]
+            all_edit_dist = float(sum(ratio)) / n
+            all_intersection = float(len(query_set.intersection(product_descr_set.union(product_title_set)))) / n
+        elif product_title is not None:
+            all_edit_dist = title_edit_dist
+            all_intersection = title_intersection
+        elif product_descr is not None:
+            all_edit_dist = descr_edit_dist
+            all_intersection = descr_intersection
 
-    def fit(self, X, y=None):
+        title_similarity = self.alpha * title_intersection + (1 - self.alpha) * title_edit_dist
+        descr_similarity = self.alpha * descr_intersection + (1 - self.alpha) * descr_edit_dist
+        all_similarity = self.alpha * all_intersection + (1 - self.alpha) * all_edit_dist
+        return pd.Series(dict(
+                              # title_edit_dist=title_edit_dist,
+                              # descr_edit_dist=descr_edit_dist,
+                              # title_intersection=title_intersection,
+                              # descr_intersection=descr_intersection,
+                              all_edit_dist=all_edit_dist,
+                              all_intersection=all_intersection,
+                              all_similarity=all_similarity,
+                              title_similarity=title_similarity,
+                              descr_similarity=descr_similarity
+                              ))
+
+    def fit(self, X, y):
         '''
 
-        :param X: pandas.DataFrame
+        :param X: numpy.array
         :return: self
         '''
+        data = pd.DataFrame(X, columns=self.columns)
         self.tokenizer = CountVectorizer(stop_words="english", lowercase=True,
                                          strip_accents="unicode", token_pattern=r"(?u)\b\w\w+-?\w*\b").build_analyzer()
 
@@ -246,30 +285,42 @@ class DataTransformer(BaseEstimator, TransformerMixin):
         # self.ratesEncoder = OneHotEncoder(dtype=np.int8, sparse=False, handle_unknown="ignore")
         # self.ratesEncoder.fit(rates)
 
+        __ = pd.concat([data["query"], pd.DataFrame(y, columns=["median_relevance"])], axis=1).groupby(["query", "median_relevance"])["query"].count()
+        _ = data["query"].groupby(data["query"]).count()
+        ratio = __.divide(_, level=0).unstack().fillna(0)
+
+        clusterer = MeanShift(bandwidth=self.bandwidth)
+        labels = clusterer.fit_predict(ratio.values)
+
+        self.query2cluster = dict(zip(ratio.index.values, labels))
+        self.n_query_clusters = np.unique(labels).size
         self.queryEncoder = OneHotEncoder(dtype=np.bool, sparse=False, handle_unknown="ignore")
-        self.queryEncoder.fit(np.vectorize(lambda x: abs(hash(x)) % 30000)(data["query"].values.reshape((-1, 1))))
+        self.queryEncoder.fit(labels.reshape((-1, 1)))
 
-        self.titleEncoder = CountVectorizer(stop_words="english", lowercase=True, strip_accents="unicode", ngram_range=(1, 4), min_df=50, max_df=3000, binary=True, dtype=np.bool)
-        self.titleEncoder.fit(data["product_title"].values)
-
-        self.descriptionEncoder = CountVectorizer(stop_words="english", lowercase=True, strip_accents="unicode", ngram_range=(1, 4), min_df=50, max_df=3000, binary=True, dtype=np.bool)
-        self.descriptionEncoder.fit(data["product_description"].values)
+        # self.titleEncoder = CountVectorizer(stop_words="english", lowercase=True, strip_accents="unicode", ngram_range=(1, 4), min_df=50, max_df=3000, binary=True, dtype=np.bool)
+        # self.titleEncoder.fit(data["product_title"].values)
+        #
+        # self.descriptionEncoder = CountVectorizer(stop_words="english", lowercase=True, strip_accents="unicode", ngram_range=(1, 4), min_df=50, max_df=3000, binary=True, dtype=np.bool)
+        # self.descriptionEncoder.fit(data["product_description"].values)
         return self
 
-    def transform(self, data):
+    def transform(self, X, y=None):
         '''
 
-        :param data: pandas.DataFrame
+        :param data: numpy.array
         :return: numpy.array
         '''
+        data = pd.DataFrame(X, columns=self.columns)
         data_rates = data.apply(self.__matching_rate, axis=1).values
         # data_rates = self.ratesEncoder.transform(rates)
-        data_query = self.queryEncoder.transform(np.vectorize(lambda x: abs(hash(x)) % 30000)(data["query"].values.reshape((-1, 1))))
-        data_title = np.asarray(self.titleEncoder.transform(data["product_title"].values).todense())
-        data_description = np.asarray(self.descriptionEncoder.transform(data["product_description"].values).todense())
+        labels = np.vectorize(lambda x: self.query2cluster[x])(data["query"].values)
 
-        return np.hstack((data_rates, data_query, data_title, data_description)),\
-            [data_rates.shape[1], data_query.shape[1], data_title.shape[1], data_description.shape[1]]
+        data_query = self.queryEncoder.transform(labels.reshape((-1, 1)))
+        # data_query = self.queryEncoder.transform(np.vectorize(lambda x: abs(hash(x)) % 30000)(data["query"].values.reshape((-1, 1))))
+        # data_title = np.asarray(self.titleEncoder.transform(data["product_title"].values).todense())
+        # data_description = np.asarray(self.descriptionEncoder.transform(data["product_description"].values).todense())
+        self.groups_size = [data_rates.shape[1], data_query.shape[1]]
+        return np.hstack((data_rates, data_query))
 
 
 def load_data(filename, has_label=True):
@@ -336,58 +387,37 @@ class FMClassifier(BaseEstimator):
 
 if __name__ == "__main__":
 
-    data, id, relevance = load_data("data/train.csv", has_label=True)
+    data, id_, relevance = load_data("data/train.csv", has_label=True)
 
-    dataTransformer = DataTransformer()
-    data_preprocessed, groups_size = dataTransformer.fit_transform(data)
-    print data_preprocessed.shape, groups_size
+    # dataTransformer = DataTransformer(alpha=0.7, correction=True, bandwidth=0.25)
+    # data_preprocessed = dataTransformer.fit_transform(data, relevance.median_relevance)
+    # print data_preprocessed.shape
 
     # Model
-    cl = GradientBoostingClassifier(n_estimators=100, max_depth=3, min_samples_leaf=10, subsample=0.5, random_state=0)
+    cl = Pipeline([("t", DataTransformer(columns=data.columns.values, alpha=0.7, correction=True, bandwidth=0.125)),
+                  ("e", GradientBoostingClassifier(n_estimators=100, max_depth=3, min_samples_leaf=10, subsample=0.5, random_state=0))])
 
-    grid_search = GridSearchCV(cl, param_grid={}, scoring=scorer, cv=6, verbose=True)
-    grid_search.fit(data_preprocessed[:, :sum(groups_size[:2])], relevance.median_relevance.values)
+    param_grid = dict(e__n_estimators=[150], e__max_depth=[2, 3, 4],
+                      e__min_samples_leaf=[10, 20, 30], e__subsample=[0.5, 0.8])
+    grid_search = GridSearchCV(cl, param_grid=param_grid, scoring=scorer, cv=6, verbose=True, n_jobs=6)
+    grid_search.fit(data.values, relevance.median_relevance.values)
 
     print grid_search.grid_scores_
-    print "train score", scorer(grid_search.best_estimator_, data_preprocessed[:, :sum(groups_size[:2])], relevance.median_relevance.values)
+    print grid_search.best_params_, grid_search.best_score_
+    print "train score", scorer(grid_search.best_estimator_, data.values, relevance.median_relevance.values)
+
+    print "n query groups:", grid_search.best_estimator_.steps[0][-1].n_query_clusters
+    print "actual relevance distr:", np.bincount(relevance.median_relevance.values) / float(relevance.median_relevance.values.size)
+    prediction = grid_search.best_estimator_.predict(data.values)
+    print "pred relevance distr:", np.bincount(prediction) / float(prediction.size)
+
+    print grid_search.best_estimator_.steps[-1][-1].feature_importances_
 
     # SUBMISSION
-    test_data, id = load_data("data/test.csv", has_label=False)
-    test_data_preprocessed, _ = dataTransformer.transform(test_data)
+    test_data, id_ = load_data("data/test.csv", has_label=False)
+    # test_data_preprocessed, _ = dataTransformer.transform(test_data)
 
-    prediction = grid_search.best_estimator_.predict(test_data_preprocessed[:, :sum(groups_size[:2])])
-    pred = pd.DataFrame({"id": id, "prediction": prediction})
+    prediction = grid_search.best_estimator_.predict(test_data.values)
+    pred = pd.DataFrame({"id": id_, "prediction": prediction})
     pred.to_csv("submission.txt", index=False)
 
-
-    # print pd.Series(grid_search.best_estimator_.feature_importances_, index=data_preprocessed.columns)
-
-    # train, validation, y_train, y_validation = train_test_split(data_preprocessed, relevance.median_relevance.values,
-    #                                                             test_size=0.2, random_state=0)
-    #
-    # libfm_meta_file(filename="data/libfm.meta", groups_size=groups_size)
-    # params = dict(task="r", train="data/train.libfm", test="data/validation.libfm", meta="data/libfm.meta",
-    #               dim="'1,1,1'", iter_=1000, method="mcmc", init_stdev=0.1, out="prediction.txt")
-    # cl = FMClassifier(**params)
-    # cl.fit(train, y_train, validation)
-    # pred = cl.predict()
-    # print "validation score {0}".format(kappa(y_validation, pred))
-    #
-    # numpy2libfm(X=train, y=y_train, filename="data/train.libfm")
-    # numpy2libfm(X=validation, y=y_validation, filename="data/validation.libfm")
-    #
-    # test_data, id = load_data("data/test.csv", has_label=False)
-    # test_data_preprocessed, _ = dataTransformer.transform(test_data)
-    # numpy2libfm(X=test_data_preprocessed, filename="data/test.libfm")
-    #
-    # params = dict(task="r", train="data/train.libfm", test="data/validation.libfm", meta="data/libfm.meta",
-    #               dim="'1,1,1'", iter=1000, method="mcmc", init_stdev=0.1, out="prediction.txt")
-    #
-    # bash_params = ["-{0} {1}".format(k, v) for k, v in params.iteritems()]
-    # bash_command = "./libFM {0}".format(" ".join(bash_params))
-    # process = subprocess.Popen(bash_command, stdout=subprocess.PIPE, shell=True)
-    # output = process.communicate()[0]
-    #
-    # pred = np.round(np.loadtxt("prediction.txt"))
-    # print "validation score {0}".format(kappa(y_validation, pred))
-    # print np.unique(pred)
