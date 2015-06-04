@@ -762,20 +762,21 @@ if __name__ == "__main__":
                              tfidf_params=dict(min_df=5, max_df=1., ngram_range=(1,1), norm=None, use_idf=True, smooth_idf=True, sublinear_tf=True), #min_df=5, ngram_range=(1, 1), smooth_idf=True,
                              query_clusterer="KMeans", clusterer_params=dict(n_clusters=8, random_state=10),
                              topics_model="TruncatedSVD", topics_params=dict(n_components=70, n_iter=5, random_state=10), fit_topics=True,
-                             use_semantic_sim=True, use_matching_sim=True, use_query_labels=True, use_topics=False)
+                             use_semantic_sim=True, use_matching_sim=True, use_query_labels=True, use_topics=True)
     dataTransformer = DataTransformer(**tranformer_params)
 
-    estimator = SVC(C=10.0, kernel='rbf', degree=3, gamma=0.0, coef0=0.0, shrinking=True,
+    estimator = SVC(C=31.622776601683793, kernel='poly', degree=4, gamma=0.063095734448019331, coef0=1.0, shrinking=True,
                     probability=False, tol=0.001, class_weight="auto",
-                    verbose=False, max_iter=2000000, random_state=None)
+                    verbose=False, max_iter=2000000, random_state=0)
      #RandomForestClassifier(n_estimators=150, max_depth=11, min_samples_leaf=10, random_state=0)
-
+    estimator = SVC(C=10, kernel='rbf', degree=3, gamma=0.0, coef0=0.0, shrinking=True,
+                    probability=False, tol=0.001, class_weight=None,
+                    verbose=False, max_iter=2000000, random_state=0)
     cl = Pipeline([("t", dataTransformer),
                    ("s", StandardScaler()),
                    ("e", estimator)])
 
-    param_grid = dict(e__C=np.logspace(0, 1.5, 5), e__kernel=['poly'],
-                      e__degree=[4, 5, 6], e__gamma=np.logspace(-1.2, -0.5, 5), e__coef0=[0., 1.])
+    param_grid = dict()
                   # dict(e__C=np.logspace(-2, 2, 5), e__kernel=['rbf'],
                   #      e__degree=[4], e__gamma=np.logspace(-3, -1, 5))]
 
@@ -789,7 +790,7 @@ if __name__ == "__main__":
     prediction = grid_search.predict(data.values)
     print "pred relevance distr:", np.bincount(prediction) / float(prediction.size)
     print "groups size: {}".format(grid_search.best_estimator_.steps[0][-1].groups_size)
-    print grid_search.best_estimator_.steps[-1][-1].coef_
+    # print grid_search.best_estimator_.steps[-1][-1].coef_
 
     cPickle.dump(grid_search.best_estimator_.steps[0][-1].transform(data.values), open("data.pkl", "w"))
     # cPickle.dump(grid_search, open("grid_search.pkl", "w"))
@@ -799,23 +800,9 @@ if __name__ == "__main__":
     pred = pd.DataFrame({"id": id_, "prediction": prediction})
     pred.to_csv("submission.txt", index=False)
 
+# best params: {'e__coef0': 1.0, 'e__kernel': 'poly', 'e__C': 31.622776601683793, 'e__degree': 4, 'e__gamma': 0.063095734448019331}
+# best scores: {'std': 0.03033, 'median': 0.5862, 'mean': 0.58663}
+# train test diff: 0.02948, train test diff %: 4.785
 # actual relevance distr: [ 0.          0.0761961   0.14530419  0.17099823  0.60750148]
-# pred relevance distr: [ 0.          0.06851742  0.12128372  0.0753101   0.73488876]
-# [ 0.13900232  0.01359494  0.12784543  0.17336526  0.19725997  0.03470456
-#   0.01486915  0.01585572  0.02213726  0.01012937  0.01442998  0.01310529
-#   0.01438942  0.01365418  0.01283721  0.01313944  0.00832776  0.01086718
-#   0.01087583  0.00985665  0.00949602  0.00832151  0.012701    0.0092322
-#   0.01212067  0.00931838  0.01039914  0.00691038  0.00853509  0.00448092
-#   0.00980121  0.00842332  0.01099926  0.00901399]
-
-# best params: {'e__max_depth': 11, 'e__min_samples_leaf': 5}
-# best scores: {'std': 0.02945, 'median': 0.59078, 'mean': 0.59158}
-# train test diff: 0.05583, train test diff %: 8.624
-# actual relevance distr: [ 0.          0.0761961   0.14530419  0.17099823  0.60750148]
-# pred relevance distr: [ 0.          0.06822209  0.11842882  0.0653672   0.74798189]
+# pred relevance distr: [ 0.          0.11055326  0.16479622  0.16617444  0.55847608]
 # groups size: [1, 5, 8]
-# [ 0.16426799  0.14087134  0.04716219  0.07940412  0.15523134  0.05615921
-#   0.04162492  0.01300413  0.1233645   0.01953127  0.03252472  0.05747646
-#   0.0532433   0.0161345 ]
-
-# SVC(C=10.0, kernel='rbf', degree=3, gamma=0.0, coef0=0.0, shrinking=True, probability=False, tol=0.001, cache_size=200, class_weight=None, verbose=False, max_iter=-1, random_state=None)
