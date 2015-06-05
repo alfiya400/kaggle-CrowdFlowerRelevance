@@ -212,27 +212,28 @@ def word_processor(word):
     #         word_ = word
 
     #     word_ = STEMMER.stem(word_.split("'")[0])
-    if re.findall("-", word):
-        if not re.findall("[0-9]", word):
-            tmp_set.append(word)
-            if min(len(_) for _ in word.split("-")) > 3:
-                out = word.split("-")
-            else:
-                out = word.replace("-", "")
-        else:
-            out = word.split("-")
-
-    else:
-        out = word
+    # if re.findall("-", word):
+    #     if not re.findall("[0-9]", word):
+    #         tmp_set.append(word)
+    #         if min(len(_) for _ in word.split("-")) > 3:
+    #             out = word.split("-")
+    #         else:
+    #             out = word.replace("-", "")
+    #     else:
+    #         out = word.split("-")
+    #
+    # else:
+    #     out = word
 
     return word
 
 wordsProcessor = np.vectorize(word_processor)
-analyzer = CountVectorizer(stop_words="english", lowercase=True, strip_accents="unicode",
-                           token_pattern=r"(?u)\b\w+-?\w\w*-?\w*-?\w*-?\w*-?\w*-?\w*-?\w*-?\w*-?\w*-?\w*-?\w*-?\w*\b").build_analyzer()
-
-def tokenizer(x):
-    tokens = analyzer(x)
+analyzer = CountVectorizer(stop_words="english", lowercase=True, strip_accents="unicode", ngram_range=(1, 2),
+                           token_pattern=r"(?u)\b\w\w+\b").build_analyzer()      #r"(?u)\b\w+-?\w\w*-?\w*-?\w*-?\w*\b"
+tokenizer = CountVectorizer(stop_words="english", lowercase=True, strip_accents="unicode", ngram_range=(1, 1),
+                            token_pattern=r"(?u)\b\w\w+\b").build_analyzer()      #r"(?u)\b\w+-?\w\w*-?\w*-?\w*-?\w*\b" # def tokenizer(x):
+def tokenize(x):
+    tokens = tokenizer(x)
     out = []
     for t in tokens:
         word = word_processor(t)
@@ -755,14 +756,21 @@ if __name__ == "__main__":
     # print tmp_set_.groupby(tmp_set_).count().sort(ascending=False, inplace=False)
 
     QUERIES = pd.concat([data["query"], test_data["query"]], ignore_index=True).drop_duplicates().values
+    # PRODUCTS = pd.concat([data["product"], test_data["product"]], ignore_index=True).drop_duplicates().values
+    l_f = lambda x: " ".join(["t_" + v for v in tokenizer(x["product_title"])]) \
+                    + " " + " ".join(["t_" + v for v in tokenizer(x["product_description"])]) \
+                    + " " + " ".join(["q_" + v for v in tokenizer(x["query"])])
+    data["product"] = data.apply(l_f, axis=1)
+    test_data["product"] = test_data.apply(l_f, axis=1)
     PRODUCTS = pd.concat([data["product"], test_data["product"]], ignore_index=True).drop_duplicates().values
 
+    print PRODUCTS[:3]
     # MODEL
-    tranformer_params = dict(columns=data.columns.values, tokenizer=tokenizer, wordsProcessor=wordsProcessor,
-                             tfidf_params=dict(min_df=5, max_df=1., ngram_range=(1,1), norm=None, use_idf=True, smooth_idf=True, sublinear_tf=True), #min_df=5, ngram_range=(1, 1), smooth_idf=True,
+    tranformer_params = dict(columns=data.columns.values, tokenizer=tokenize, wordsProcessor=wordsProcessor,
+                             tfidf_params=dict(min_df=5, max_df=1., ngram_range=(1,2), norm=None, use_idf=True, smooth_idf=True, sublinear_tf=True), #min_df=5, ngram_range=(1, 1), smooth_idf=True,
                              query_clusterer="KMeans", clusterer_params=dict(n_clusters=8, random_state=10),
-                             topics_model="TruncatedSVD", topics_params=dict(n_components=70, n_iter=5, random_state=10), fit_topics=True,
-                             use_semantic_sim=True, use_matching_sim=True, use_query_labels=True, use_topics=True)
+                             topics_model="TruncatedSVD", topics_params=dict(n_components=500, n_iter=5, random_state=10), fit_topics=True,
+                             use_semantic_sim=False, use_matching_sim=True, use_query_labels=True, use_topics=True)
     dataTransformer = DataTransformer(**tranformer_params)
 
     estimator = SVC(C=31.622776601683793, kernel='poly', degree=4, gamma=0.063095734448019331, coef0=1.0, shrinking=True,
