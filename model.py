@@ -17,7 +17,7 @@ from sklearn.cross_validation import train_test_split, cross_val_score
 from sklearn.dummy import DummyClassifier
 from sklearn.cluster import MeanShift, KMeans
 from sklearn.svm import SVC
-from sklearn.pipeline import Pipeline
+from sklearn.pipeline import Pipeline, FeatureUnion
 import time
 import subprocess
 import csv
@@ -409,11 +409,11 @@ class DataTransformer(BaseEstimator, TransformerMixin):
         return x
 
     def fit(self, X, y):
-        '''
+        """
 
         :param X: numpy.array
         :return: self
-        '''
+        """
 
         # Check if semantic similarity or topics are requested,
         # but attribute @fit_topics is False
@@ -459,11 +459,11 @@ class DataTransformer(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
-        '''
+        """
 
         :param data: numpy.array
         :return: numpy.array
-        '''
+        """
 
         data = pd.DataFrame(X, columns=self.columns)
 
@@ -497,6 +497,292 @@ class DataTransformer(BaseEstimator, TransformerMixin):
             out.append(data_topics)
             self.groups_size.append(data_topics.shape[1])
         return np.hstack(out)
+
+class QueryProductMatch(BaseEstimator, TransformerMixin):
+    """Matching rates between query and product
+    Consists of the followting steps:
+
+    Tokenization of text
+    -------------------------------------------------------------------------------------
+    Applied to fields "query", "product_description", "product_title"
+    Params:
+        tokenizer: function
+            tokenizer
+        wordsProcessor: function (vectorized by np.vectorize)
+            applied to each word after tokenization
+
+    Matching rates between query and product
+    -------------------------------------------------------------------------------------
+    Calculates
+        tokens intersection between query and product
+        maximum edit similarity
+        linear combination between intersection rate and edit similarity rate
+    Params:
+        alpha: float between 0 and 1
+            used in weighted sum of intersection_rate and edit similarity rate
+            similarity = alpha * intersection_rate + (1-alpha) * edit_similarity_rate
+        correction: bool
+            whether to apply correction function on edit distance rate or not
+
+    Additional params:
+    ------------------
+        columns: list or np.array
+            column names for data
+    """
+    def __init__(self, columns, tokenizer, alpha=0.7, correction=True):
+        self.columns = columns
+        self.tokenizer = tokenizer
+
+        self.alpha = alpha
+        self.correction = correction
+
+    def correct_rate(self, r):
+        if self.correction:
+            return r if r > 0.5 else 0
+        else:
+            return r
+
+    def matching_rate(self, x):
+        query = x["query_tokens"]
+        product_title = x["title_tokens"]
+        product_descr = x["descr_tokens"]
+
+        title_edit_dist = title_intersection = -1
+        descr_edit_dist = descr_intersection = -1
+        all_edit_dist = all_intersection = -1
+
+        n = len(query)
+        query_set = set(query)
+        if product_title.size:
+            product_title_set = set(product_title)
+            query_title_ratio = [self.correct_rate(max([SequenceMatcher(None, w, w1).ratio() for w1 in product_title])) for w in query]
+            title_edit_dist = float(sum(query_title_ratio)) / n
+            title_intersection = float(len(query_set.intersection(product_title_set))) / n
+
+        if product_descr.size:
+            product_descr_set = set(product_descr)
+            query_descr_ratio = [self.correct_rate(max([SequenceMatcher(None, w, w1).ratio() for w1 in product_descr])) for w in query]
+            descr_edit_dist = float(sum(query_descr_ratio)) / n
+            descr_intersection = float(len(query_set.intersection(product_descr_set))) / n
+
+        if product_title.size and product_descr.size:
+            ratio = [max(x1, x2) for x1, x2 in zip(query_title_ratio, query_descr_ratio)]
+            all_edit_dist = float(sum(ratio)) / n
+            all_intersection = float(len(query_set.intersection(product_descr_set.union(product_title_set)))) / n
+        elif product_title.size:
+            all_edit_dist = title_edit_dist
+            all_intersection = title_intersection
+        elif product_descr.size:
+            all_edit_dist = descr_edit_dist
+            all_intersection = descr_intersection
+
+        title_similarity = self.alpha * title_intersection + (1 - self.alpha) * title_edit_dist
+        descr_similarity = self.alpha * descr_intersection + (1 - self.alpha) * descr_edit_dist
+        all_similarity = self.alpha * all_intersection + (1 - self.alpha) * all_edit_dist
+
+        return pd.Series([all_edit_dist, all_intersection, all_similarity, title_similarity, descr_similarity],
+                         index="all_edit_dist all_intersection all_similarity title_similarity descr_similarity".split())
+
+    def tokenize(self, x):
+        x["query_tokens"]= self.tokenizer(x["query"])
+        # x["query_tokens"] = self.wordsProcessor(tokens) if tokens else np.array([])
+
+        x["title_tokens"] = self.tokenizer(x["product_title"])
+        # x["title_tokens"] = self.wordsProcessor(tokens) if tokens else np.array([])
+
+        x["descr_tokens"] = self.tokenizer(x["product_description"])
+        # x["descr_tokens"] = self.wordsProcessor(tokens) if tokens else np.array([])
+        x = x.drop(["product_title", "product_description"])
+        return x
+
+    def fit(self, X, y):
+        """
+
+        :param X: numpy.array
+        :return: self
+        """
+        return self
+
+    def transform(self, X, y=None):
+        """
+
+        :param data: numpy.array
+        :return: numpy.array
+        """
+
+        data = pd.DataFrame(X, columns=self.columns)
+
+        # TOKENIZE
+        data = data.apply(self.tokenize, axis=1)
+
+        # MATCHING RATES
+        data_rates = data.apply(self.matching_rate, axis=1).values
+
+        return data_rates
+
+class QueryClustering(BaseEstimator, TransformerMixin):
+    """
+    Query clustering
+    -------------------------------------------------------------------------------------
+    Cluster queries according to their distribution of relevance
+    (so queries with similar relevance score distribution should be in the same cluster)
+    Params:
+        query_clusterer: str, default="MeanShift"
+            clustering algorithm to use
+            must be in globals()
+        clusterer_params: dict
+            default=dict(bandwidth=0.125)
+
+
+    Additional params:
+    ------------------
+        columns: list or np.array
+            column names for data
+    """
+    def __init__(self, columns, query_clusterer="MeanShift", clusterer_params=None):
+        self.columns = columns
+
+        self.query_clusterer = query_clusterer
+        self.clusterer_params = clusterer_params
+
+    def fit(self, X, y):
+        """
+
+        :param X: numpy.array
+        :return: self
+        """
+
+        # Set default
+        if self.clusterer_params is None:
+            self.clusterer_params = dict(bandwidth=0.125)
+
+        data = pd.DataFrame(X, columns=self.columns)
+
+        # QUERY CLUSTERING
+        __ = pd.concat([data["query"], pd.DataFrame(y, columns=["median_relevance"])], axis=1).groupby(["query", "median_relevance"])["query"].count()
+        _ = data["query"].groupby(data["query"]).count()
+        ratio = __.divide(_, level=0).unstack().fillna(0)
+
+        clusterer = globals()[self.query_clusterer](**self.clusterer_params)
+        labels = clusterer.fit_predict(ratio.values)
+
+        self.query2cluster = dict(zip(ratio.index.values, labels))
+        self.n_query_clusters = np.unique(labels).size
+        self.queryEncoder = OneHotEncoder(dtype=np.bool, sparse=False, handle_unknown="ignore")
+        self.queryEncoder.fit(labels.reshape((-1, 1)))
+
+        return self
+
+    def transform(self, X, y=None):
+        """
+
+        :param data: numpy.array
+        :return: numpy.array
+        """
+
+        data = pd.DataFrame(X, columns=self.columns)
+
+        # QUERY CLUSTERS
+        labels = np.vectorize(lambda x: self.query2cluster[x])(data["query"].values)
+        data_query = self.queryEncoder.transform(labels.reshape((-1, 1)))
+
+        return data_query
+
+class TopicModel(BaseEstimator, TransformerMixin):
+    """
+    Topic modeling and semantic similarity
+    -------------------------------------------------------------------------------------
+    Builds TF-IDF matrix for PRODUCTS using TfIdfVectorizer from sklearn
+    Applies matrix decomposition on tf-idf matrix
+    and calculates semantic similarity between query and product using cosine similarity
+    Params:
+        params for TfIdfVectorizer:
+        (see docs for sklearn.feature_extraction.text.TfidfVectorizer)
+            min_df
+            max_df
+            ngram_range
+            smooth_idf
+
+        topics_model: str, default="NMF"
+            method for matrix decomposition
+            should be in globals()
+        topics_params: dict
+            params to pass in topics_model
+            default=dict(n_components=2, init='nndsvd', sparseness="components")
+
+    Additional params:
+    ------------------
+        columns: list or np.array
+            column names for data
+        use_semantic_sim: bool
+            whether to include semantic_similarity measure in output data
+        use_topics: bool
+            whether to include topics (transformed tf-idf matrix) in output data
+    """
+    def __init__(self, columns, tfidf_params=None, topics_model="NMF", topics_params=None,
+                 use_semantic_sim=True, use_topics=False):
+        self.columns = columns
+
+        self.tfidf_params = tfidf_params
+
+        self.topics_model = topics_model
+        self.topics_params = topics_params
+
+        self.use_semantic_sim = use_semantic_sim
+        self.use_topics = use_topics
+
+    def fit(self, X, y):
+        """
+
+        :param X: numpy.array
+        :return: self
+        """
+
+        # one of the flags @use_semantic_sim or @use_topics should be True
+        if not (self.use_semantic_sim or self.use_topics):
+            raise Exception("One of the flags @use_semantic_sim or @use_topics should be True")
+
+        # Set default
+        if self.topics_params is None:
+            self.topics_params = dict(n_components=2, init='nndsvd', sparseness="components")
+        if self.tfidf_params is None:
+            self.tfidf_params = dict(min_df=5, max_df=1., ngram_range=(1, 1), norm="l2", use_idf=True, smooth_idf=True)
+
+        # TOPIC MODELING FOR PRODUCTS
+        # if self.fit_topics:
+        self.tfIdfVectorizer = TfidfVectorizer(stop_words='english', **self.tfidf_params)
+        tf_idf = self.tfIdfVectorizer.fit_transform(PRODUCTS)
+
+        start = time.time()
+        self.topicsExtractor = globals()[self.topics_model](**self.topics_params)
+        self.product_topics = self.topicsExtractor.fit_transform(tf_idf)
+        self.query_topics = self.topicsExtractor.transform(self.tfIdfVectorizer.transform(QUERIES))
+        print "Tokens num: {0} Decomposition time: {1} Variance {2}".\
+            format(tf_idf.shape[1], time_passed(start),sum(self.topicsExtractor.explained_variance_ratio_))
+
+        return self
+
+    def transform(self, X, y=None):
+        """
+
+        :param data: numpy.array
+        :return: numpy.array
+        """
+
+        data = pd.DataFrame(X, columns=self.columns)
+
+        out = []
+        # SEMANTIC SIMILARITY
+        if self.use_semantic_sim:
+            semantic_similarity = data.apply(cosine_sim, axis=1, args=(self.query_topics, self.product_topics))
+            out.append(semantic_similarity.values.reshape((-1, 1)))
+
+        # TOPICS
+        if self.use_topics:
+            data_topics = np.array(map(lambda x: self.product_topics[PRODUCTS == x].ravel(), data["product"].values.reshape((-1, 1))))
+            out.append(data_topics)
+        return np.hstack(out)
+
 
 def load_data(filename, has_label=True):
     start = time.time()
@@ -660,7 +946,7 @@ class GridSearch(BaseEstimator):
             start = time.time()
             # e = clone(self.estimator)
             self.estimator.set_params(**params)
-            self.fit_topics(params, self.estimator)
+            # self.fit_topics(params, self.estimator)
 
             # transform data
             if [k for k in params if k.split("__")[0] == "t"] or transformed_data is None:
@@ -692,7 +978,7 @@ class GridSearch(BaseEstimator):
         if self.refit:
             self.best_estimator_ = clone(self.estimator)
             self.best_estimator_.set_params(**self.best_params_)
-            self.fit_topics(self.best_params_, self.best_estimator_)
+            # self.fit_topics(self.best_params_, self.best_estimator_)
 
             transformed_data = self.best_estimator_.steps[0][-1].fit_transform(X, y)
             transformed_data = self.middle_transformations(self.best_estimator_, transformed_data, y)
@@ -758,7 +1044,7 @@ if __name__ == "__main__":
     QUERIES = pd.concat([data["query"], test_data["query"]], ignore_index=True).drop_duplicates().values
     # PRODUCTS = pd.concat([data["product"], test_data["product"]], ignore_index=True).drop_duplicates().values
     l_f = lambda x: " ".join(["t_" + v for v in tokenizer(x["product_title"])]) \
-                    + " " + " ".join(["t_" + v for v in tokenizer(x["product_description"])]) \
+                    + " " + " ".join(["d_" + v for v in tokenizer(x["product_description"])]) \
                     + " " + " ".join(["q_" + v for v in tokenizer(x["query"])])
     data["product"] = data.apply(l_f, axis=1)
     test_data["product"] = test_data.apply(l_f, axis=1)
@@ -766,13 +1052,21 @@ if __name__ == "__main__":
 
     print PRODUCTS[:3]
     # MODEL
-    tranformer_params = dict(columns=data.columns.values, tokenizer=tokenize, wordsProcessor=wordsProcessor,
-                             tfidf_params=dict(min_df=5, max_df=1., ngram_range=(1,2), norm=None, use_idf=True, smooth_idf=True, sublinear_tf=True), #min_df=5, ngram_range=(1, 1), smooth_idf=True,
-                             query_clusterer="KMeans", clusterer_params=dict(n_clusters=8, random_state=10),
-                             topics_model="TruncatedSVD", topics_params=dict(n_components=500, n_iter=5, random_state=10), fit_topics=True,
-                             use_semantic_sim=False, use_matching_sim=True, use_query_labels=True, use_topics=True)
-    dataTransformer = DataTransformer(**tranformer_params)
+    # tranformer_params = dict(columns=data.columns.values, tokenizer=tokenize, wordsProcessor=wordsProcessor,
+    #                          tfidf_params=dict(min_df=5, max_df=1., ngram_range=(1,2), norm=None, use_idf=True, smooth_idf=True, sublinear_tf=True), #min_df=5, ngram_range=(1, 1), smooth_idf=True,
+    #                          query_clusterer="KMeans", clusterer_params=dict(n_clusters=8, random_state=10),
+    #                          topics_model="TruncatedSVD", topics_params=dict(n_components=500, n_iter=5, random_state=10), fit_topics=True,
+    #                          use_semantic_sim=False, use_matching_sim=True, use_query_labels=True, use_topics=True)
+    # dataTransformer = DataTransformer(**tranformer_params)
 
+    dataTransformer = FeatureUnion([
+        ("m", QueryProductMatch(columns=data.columns.values, tokenizer=tokenize)),
+        ("q", QueryClustering(columns=data.columns.values, query_clusterer="KMeans",
+                              clusterer_params=dict(n_clusters=8, random_state=10))),
+        ("t", TopicModel(columns=data.columns.values, use_semantic_sim=False, use_topics=True,
+                         tfidf_params=dict(min_df=5, max_df=1., ngram_range=(1, 2), norm="l2", use_idf=True, smooth_idf=True, sublinear_tf=True),
+                         topics_model="TruncatedSVD", topics_params=dict(n_components=200, n_iter=5, random_state=10)))
+    ])
     estimator = SVC(C=31.622776601683793, kernel='poly', degree=4, gamma=0.063095734448019331, coef0=1.0, shrinking=True,
                     probability=False, tol=0.001, class_weight="auto",
                     verbose=False, max_iter=2000000, random_state=0)
@@ -780,6 +1074,7 @@ if __name__ == "__main__":
     estimator = SVC(C=10, kernel='rbf', degree=3, gamma=0.0, coef0=0.0, shrinking=True,
                     probability=False, tol=0.001, class_weight=None,
                     verbose=False, max_iter=2000000, random_state=0)
+    # estimator = RandomForestClassifier(n_estimators=150, max_depth=11, min_samples_leaf=10, random_state=0)
     cl = Pipeline([("t", dataTransformer),
                    ("s", StandardScaler()),
                    ("e", estimator)])
@@ -797,7 +1092,7 @@ if __name__ == "__main__":
     print "actual relevance distr:", np.bincount(relevance.median_relevance.values) / float(relevance.median_relevance.values.size)
     prediction = grid_search.predict(data.values)
     print "pred relevance distr:", np.bincount(prediction) / float(prediction.size)
-    print "groups size: {}".format(grid_search.best_estimator_.steps[0][-1].groups_size)
+    # print "groups size: {}".format(grid_search.best_estimator_.steps[0][-1].groups_size)
     # print grid_search.best_estimator_.steps[-1][-1].coef_
 
     cPickle.dump(grid_search.best_estimator_.steps[0][-1].transform(data.values), open("data.pkl", "w"))
