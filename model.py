@@ -529,16 +529,17 @@ class QueryProductMatch(BaseEstimator, TransformerMixin):
         columns: list or np.array
             column names for data
     """
-    def __init__(self, columns, tokenizer, alpha=0.7, correction=True):
+    def __init__(self, columns, tokenizer, alpha=0.7, correction=True, edit_rate_threshold=0.5):
         self.columns = columns
         self.tokenizer = tokenizer
 
         self.alpha = alpha
         self.correction = correction
+        self.edit_rate_threshold = edit_rate_threshold
 
     def correct_rate(self, r):
         if self.correction:
-            return r if r > 0.5 else 0
+            return r if r > self.edit_rate_threshold else 0
         else:
             return r
 
@@ -555,15 +556,23 @@ class QueryProductMatch(BaseEstimator, TransformerMixin):
         query_set = set(query)
         if product_title.size:
             product_title_set = set(product_title)
-            query_title_ratio = [self.correct_rate(max([SequenceMatcher(None, w, w1).ratio() for w1 in product_title])) for w in query]
-            title_edit_dist = float(sum(query_title_ratio)) / n
             title_intersection = float(len(query_set.intersection(product_title_set))) / n
+            if title_intersection == 1:
+                query_title_ratio = [1] * n
+                title_edit_dist = 1
+            else:
+                query_title_ratio = [self.correct_rate(max([SequenceMatcher(None, w, w1).ratio() for w1 in product_title])) for w in query]
+                title_edit_dist = float(sum(query_title_ratio)) / n
 
         if product_descr.size:
             product_descr_set = set(product_descr)
-            query_descr_ratio = [self.correct_rate(max([SequenceMatcher(None, w, w1).ratio() for w1 in product_descr])) for w in query]
-            descr_edit_dist = float(sum(query_descr_ratio)) / n
             descr_intersection = float(len(query_set.intersection(product_descr_set))) / n
+            if descr_intersection == 1:
+                query_descr_ratio = [1] * n
+                descr_edit_dist = 1
+            else:
+                query_descr_ratio = [self.correct_rate(max([SequenceMatcher(None, w, w1).ratio() for w1 in product_descr])) for w in query]
+                descr_edit_dist = float(sum(query_descr_ratio)) / n
 
         if product_title.size and product_descr.size:
             ratio = [max(x1, x2) for x1, x2 in zip(query_title_ratio, query_descr_ratio)]
@@ -864,7 +873,7 @@ class FMClassifier(BaseEstimator):
 
 
 def cosine_sim(x, query_topics, topics):
-    x1 = query_topics[QUERIES == x["query"]]
+    x1 = query_topics[QUERIES == x["query_"]]
     x2 = topics[PRODUCTS == x["product"]]
     sim = 1 - cosine(x1, x2)
     return 0. if np.isnan(sim) else sim
@@ -1041,7 +1050,6 @@ if __name__ == "__main__":
     # tmp_set_ = pd.Series(tmp_set)
     # print tmp_set_.groupby(tmp_set_).count().sort(ascending=False, inplace=False)
 
-    QUERIES = pd.concat([data["query"], test_data["query"]], ignore_index=True).drop_duplicates().values
     # PRODUCTS = pd.concat([data["product"], test_data["product"]], ignore_index=True).drop_duplicates().values
     l_f = lambda x: " ".join(["t_" + v for v in tokenizer(x["product_title"])]) \
                     + " " + " ".join(["d_" + v for v in tokenizer(x["product_description"])]) \
@@ -1049,6 +1057,11 @@ if __name__ == "__main__":
     data["product"] = data.apply(l_f, axis=1)
     test_data["product"] = test_data.apply(l_f, axis=1)
     PRODUCTS = pd.concat([data["product"], test_data["product"]], ignore_index=True).drop_duplicates().values
+
+    l_f = lambda x: " ".join(["t_" + v for v in tokenizer(x)]) # + " " + " ".join(["d_" + v for v in tokenizer(x)])
+    data["query_"] = data["query"].apply(l_f)
+    test_data["query_"] = test_data["query"].apply(l_f)
+    QUERIES = pd.concat([data["query_"], test_data["query_"]], ignore_index=True).drop_duplicates().values
 
     print PRODUCTS[:3]
     # MODEL
@@ -1063,7 +1076,7 @@ if __name__ == "__main__":
         ("m", QueryProductMatch(columns=data.columns.values, tokenizer=tokenize)),
         ("q", QueryClustering(columns=data.columns.values, query_clusterer="KMeans",
                               clusterer_params=dict(n_clusters=8, random_state=10))),
-        ("t", TopicModel(columns=data.columns.values, use_semantic_sim=False, use_topics=True,
+        ("t", TopicModel(columns=data.columns.values, use_semantic_sim=True, use_topics=True,
                          tfidf_params=dict(min_df=5, max_df=1., ngram_range=(1, 2), norm="l2", use_idf=True, smooth_idf=True, sublinear_tf=True),
                          topics_model="TruncatedSVD", topics_params=dict(n_components=200, n_iter=5, random_state=10)))
     ])
@@ -1079,7 +1092,7 @@ if __name__ == "__main__":
                    ("s", StandardScaler()),
                    ("e", estimator)])
 
-    param_grid = dict()
+    param_grid = dict(t__m__edit_rate_threshold=[0, 0.1, 0.25, 0.5, 0.7, 0.8, 0.9], t__m__alpha=[0, 0.1, 0.25, 0.5, 0.7, 0.8, 0.9, 1])
                   # dict(e__C=np.logspace(-2, 2, 5), e__kernel=['rbf'],
                   #      e__degree=[4], e__gamma=np.logspace(-3, -1, 5))]
 
