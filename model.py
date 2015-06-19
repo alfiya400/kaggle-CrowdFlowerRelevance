@@ -211,7 +211,7 @@ def word_processor(word):
     #     else:
     #         word_ = word
 
-    #     word_ = STEMMER.stem(word_.split("'")[0])
+    word_ = STEMMER.stem(word.split("'")[0])
     # if re.findall("-", word):
     #     if not re.findall("[0-9]", word):
     #         tmp_set.append(word)
@@ -225,7 +225,7 @@ def word_processor(word):
     # else:
     #     out = word
 
-    return word
+    return word_
 
 wordsProcessor = np.vectorize(word_processor)
 analyzer = CountVectorizer(stop_words="english", lowercase=True, strip_accents="unicode", ngram_range=(1, 2),
@@ -299,8 +299,15 @@ class QueryProductMatch(BaseEstimator, TransformerMixin):
 
         n = len(query)
         query_set = set(query)
+        product_title_set = set()
+        product_descr_set = set()
+        irrelevant_words = 0
+
         if product_title.size:
             product_title_set = set(product_title)
+            # if x["query"] in self.irrel_tokens:
+            #     irrelevant_words = len(product_title_set.intersection(self.irrel_tokens[x["query"]]))
+
             title_intersection = float(len(query_set.intersection(product_title_set))) / n
             if title_intersection == 1:
                 query_title_ratio = [1] * n
@@ -338,7 +345,7 @@ class QueryProductMatch(BaseEstimator, TransformerMixin):
                          index="all_edit_dist all_intersection all_similarity title_similarity descr_similarity".split())
 
     def tokenize(self, x):
-        x["query_tokens"]= self.tokenizer(x["query"])
+        x["query_tokens"] = self.tokenizer(x["query"])
         # x["query_tokens"] = self.wordsProcessor(tokens) if tokens else np.array([])
 
         x["title_tokens"] = self.tokenizer(x["product_title"])
@@ -355,6 +362,30 @@ class QueryProductMatch(BaseEstimator, TransformerMixin):
         :param X: numpy.array
         :return: self
         """
+        # data = pd.DataFrame(X, columns=self.columns)
+        #
+        # # TOKENIZE
+        # data = data.apply(self.tokenize, axis=1)
+        #
+        # # relevant product title for each query
+        # rel = y > 2
+        # rel_tokens = dict()
+        # for q, t in data[["query", "title_tokens"]][rel].itertuples(index=False):
+        #     if q not in rel_tokens:
+        #         rel_tokens[q] = set()
+        #     rel_tokens[q].update(t)
+        #
+        # # irrelevant product title for each query
+        # self.irrel_tokens = dict()
+        # for q, t in data[["query", "title_tokens"]][~rel].itertuples(index=False):
+        #     if q not in self.irrel_tokens:
+        #         self.irrel_tokens[q] = set()
+        #     self.irrel_tokens[q].update(t)
+        #
+        # for q in self.irrel_tokens:
+        #     if q in rel_tokens:
+        #         self.irrel_tokens[q].difference_update(rel_tokens[q])
+
         return self
 
     def transform(self, X, y=None):
@@ -770,8 +801,8 @@ if __name__ == "__main__":
 
     # PRODUCTS = pd.concat([data["product"], test_data["product"]], ignore_index=True).drop_duplicates().values
     l_f = lambda x: " ".join(["t_" + v for v in tokenizer(x["product_title"])]) \
-                    + " " + " ".join(["d_" + v for v in tokenizer(x["product_description"])]) \
-                    + " " + " ".join(["q_" + v for v in tokenizer(x["query"])])
+                    + " " + " ".join(["d_" + v for v in tokenizer(x["product_description"])]) #\
+                    # + " " + " ".join(["q_" + v for v in tokenizer(x["query"])])
     data["product"] = data.apply(l_f, axis=1)
     test_data["product"] = test_data.apply(l_f, axis=1)
     PRODUCTS = pd.concat([data["product"], test_data["product"]], ignore_index=True).drop_duplicates().values
@@ -804,7 +835,7 @@ if __name__ == "__main__":
                    ("s", StandardScaler()),
                    ("e", estimator)])
 
-    param_grid = dict(t__q__query_clusterer=["KMeans", None])
+    param_grid = dict()
                   # dict(e__C=np.logspace(-2, 2, 5), e__kernel=['rbf'],
                   #      e__degree=[4], e__gamma=np.logspace(-3, -1, 5))]
 
@@ -816,7 +847,7 @@ if __name__ == "__main__":
     prediction = grid_search.predict(data.values)
     print "pred relevance distr:", np.bincount(prediction) / float(prediction.size)
     print grid_search.grid_scores_
-
+    print "overfit", kappa(relevance.median_relevance.values, prediction, weights="quadratic") - grid_search.best_score_
     cPickle.dump(grid_search.best_estimator_.steps[0][-1].transform(data.values), open("data.pkl", "w"))
     # cPickle.dump(grid_search, open("grid_search.pkl", "w"))
 
@@ -824,4 +855,4 @@ if __name__ == "__main__":
     prediction = grid_search.predict(test_data.values)
     pred = pd.DataFrame({"id": id_, "prediction": prediction})
     pred.to_csv("submission.txt", index=False)
-# [mean: 0.65126, std: 0.00981, params: {}]
+# mean: 0.65842, std: 0.01080
