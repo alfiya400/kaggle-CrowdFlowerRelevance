@@ -210,33 +210,14 @@ scorer = make_scorer(kappa, greater_is_better=True, weights="quadratic")
 
 tmp_set = []
 def word_processor(word):
-    #     if not ENCHANT_DICT.check(word):
-    #         suggestions = ENCHANT_DICT.suggest(word)
-    #         word_ = suggestions[0].lower() if suggestions else word
-    #     else:
-    #         word_ = word
-    # word_morphy = wn.morphy(word) if wn.morphy(word) else word
     word_ = STEMMER.stem(word.split("'")[0])
-    # if re.findall("-", word):
-    #     if not re.findall("[0-9]", word):
-    #         tmp_set.append(word)
-    #         if min(len(_) for _ in word.split("-")) > 3:
-    #             out = word.split("-")
-    #         else:
-    #             out = word.replace("-", "")
-    #     else:
-    #         out = word.split("-")
-    #
-    # else:
-    #     out = word
-
     return word_
 
 wordsProcessor = np.vectorize(word_processor)
 analyzer = CountVectorizer(stop_words="english", lowercase=True, strip_accents="unicode", ngram_range=(1, 2),
-                           token_pattern=r"(?u)\b\w\w+\b").build_analyzer()      #r"(?u)\b\w+-?\w\w*-?\w*-?\w*-?\w*\b"
+                           token_pattern=r"(?u)\b\w\w+\b").build_analyzer()
 tokenizer = CountVectorizer(stop_words="english", lowercase=True, strip_accents="unicode", ngram_range=(1, 1),
-                            token_pattern=r"(?u)\b\w\w+\b").build_analyzer()      #r"(?u)\b\w+-?\w\w*-?\w*-?\w*-?\w*\b" # def tokenizer(x):
+                            token_pattern=r"(?u)\b\w\w+\b").build_analyzer()
 def tokenize(x):
     tokens = tokenizer(x)
     out = []
@@ -312,12 +293,9 @@ class QueryProductMatch(BaseEstimator, TransformerMixin):
         query_set = set(query)
         product_title_set = set()
         product_descr_set = set()
-        # irrelevant_words = 0
 
         if product_title.size:
             product_title_set = set(product_title)
-            # if x["query"] in self.irrel_tokens:
-            #     irrelevant_words = len(product_title_set.intersection(self.irrel_tokens[x["query"]]))
 
             title_intersection = float(len(query_set.intersection(product_title_set))) / n
             if title_intersection == 1:
@@ -326,8 +304,6 @@ class QueryProductMatch(BaseEstimator, TransformerMixin):
             else:
                 query_title_ratio = [self.correct_rate(max([SequenceMatcher(None, w, w1).ratio() for w1 in product_title])) for w in query]
                 title_edit_dist = float(sum(query_title_ratio)) / n
-
-            # title_edit_dist -= 0.001 * irrelevant_words
 
         if product_descr.size:
             product_descr_set = set(product_descr)
@@ -365,13 +341,8 @@ class QueryProductMatch(BaseEstimator, TransformerMixin):
 
     def tokenize(self, x):
         x["query_tokens"] = self.tokenizer(x["query"])
-        # x["query_tokens"] = self.wordsProcessor(tokens) if tokens else np.array([])
-
         x["title_tokens"] = self.tokenizer(x["product_title"])
-        # x["title_tokens"] = self.wordsProcessor(tokens) if tokens else np.array([])
-
         x["descr_tokens"] = self.tokenizer(x["product_description"])
-        # x["descr_tokens"] = self.wordsProcessor(tokens) if tokens else np.array([])
         x = x.drop(["product_title", "product_description"])
         return x
 
@@ -381,30 +352,6 @@ class QueryProductMatch(BaseEstimator, TransformerMixin):
         :param X: numpy.array
         :return: self
         """
-        # data = pd.DataFrame(X, columns=self.columns)
-        #
-        # # TOKENIZE
-        # data = data.apply(self.tokenize, axis=1)
-        #
-        # # relevant product title for each query
-        # rel = y > 2
-        # rel_tokens = dict()
-        # for q, t in data[["query", "title_tokens"]][rel].itertuples(index=False):
-        #     if q not in rel_tokens:
-        #         rel_tokens[q] = set()
-        #     rel_tokens[q].update(t)
-        #
-        # # irrelevant product title for each query
-        # self.irrel_tokens = dict()
-        # for q, t in data[["query", "title_tokens"]][~rel].itertuples(index=False):
-        #     if q not in self.irrel_tokens:
-        #         self.irrel_tokens[q] = set()
-        #     self.irrel_tokens[q].update(t)
-        #
-        # for q in self.irrel_tokens:
-        #     if q in rel_tokens:
-        #         self.irrel_tokens[q].difference_update(rel_tokens[q])
-
         return self
 
     def transform(self, X, y=None):
@@ -497,14 +444,11 @@ class LDA(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         corpus = Sparse2Corpus(X, documents_columns=False)
-        # print X.shape, len(corpus)
         self.lda = LdaModel(corpus, **self.params)
         return self
 
     def transform(self, X, y=None):
-        # corpus = [full2sparse(x.flat) for x in X]
         corpus = Sparse2Corpus(X, documents_columns=False)
-        # print X.shape, len(corpus)
         topics = np.array([map(lambda x: x[1], self.lda.__getitem__(c, eps=0)) for c in corpus])
         print topics.shape
         return topics
@@ -622,7 +566,7 @@ def load_data(filename, has_label=True):
         s = re.sub(r" +", " ", s)  # remove extra spaces
 
         return s
-    # ((\.[\w]+|\w\w)[\s,]*)+\{.*?\}
+
     data = pd.read_csv(filename, na_filter=False)
 
     id = data["id"].values
@@ -768,9 +712,7 @@ class GridSearch(BaseEstimator):
         transformed_data = None
         for params in ParameterGrid(self.param_grid):
             start = time.time()
-            # e = clone(self.estimator)
             self.estimator.set_params(**params)
-            # self.fit_topics(params, self.estimator)
 
             # transform data
             if [k for k in params if k.split("__")[0] == "t"] or transformed_data is None:
@@ -802,7 +744,6 @@ class GridSearch(BaseEstimator):
         if self.refit:
             self.best_estimator_ = clone(self.estimator)
             self.best_estimator_.set_params(**self.best_params_)
-            # self.fit_topics(self.best_params_, self.best_estimator_)
 
             transformed_data = self.best_estimator_.steps[0][-1].fit_transform(X, y)
             transformed_data = self.middle_transformations(self.best_estimator_, transformed_data, y)
@@ -824,25 +765,14 @@ class GridSearch(BaseEstimator):
         else:
             return self.best_estimator_.predict(X)
 
-# def hyphen_words_correction(row):
-#     for w in hyphen_words_replace:
-#         row["query"] = w[0].sub(w[1], row["query"])
-#         row["product_title"] = w[0].sub(w[1], row["product_title"])
-#         row["product_description"] = w[0].sub(w[1], row["product_description"])
-#         # row["product"] = ". ".join(row[["product_title", "product_description"]])
-#         row["product"] = w[0].sub(w[1], row["product"])
-#     return row
-
 
 if __name__ == "__main__":
     # LOAD
     data, id_0, relevance = load_data("data/train.csv", has_label=True)
     test_data, id_ = load_data("data/test.csv", has_label=False)
 
-    # PRODUCTS = pd.concat([data["product"], test_data["product"]], ignore_index=True).drop_duplicates().values
     l_f = lambda x: " ".join(["t_" + v for v in tokenizer(x["product_title"])]) \
-                    + " " + " ".join(["d_" + v for v in tokenizer(x["product_description"])])  #\
-                    # + " " + " ".join(["q_" + v for v in tokenizer(x["query"])])
+                    + " " + " ".join(["d_" + v for v in tokenizer(x["product_description"])])
     data["product"] = data.apply(l_f, axis=1)
     test_data["product"] = test_data.apply(l_f, axis=1)
     PRODUCTS = pd.concat([data["product"], test_data["product"]], ignore_index=True).drop_duplicates().values
@@ -853,37 +783,26 @@ if __name__ == "__main__":
     QUERIES = pd.concat([data["query_"], test_data["query_"]], ignore_index=True).drop_duplicates().values
 
     print PRODUCTS[:3]
+
     # MODEL
 
     dataTransformer = FeatureUnion([
-        ("m", QueryProductMatch(columns=data.columns.values, tokenizer=tokenize, edit_rate_threshold=0.25, alpha=0.5)),
+        ("m", QueryProductMatch(columns=data.columns.values, tokenizer=tokenize, edit_rate_threshold=0.25, alpha=0.5, gamma=0.5)),
         ("q", QueryClustering(columns=data.columns.values, query_clusterer=None,
-                              clusterer_params=None)),  # dict(n_clusters=8, random_state=10)
+                              clusterer_params=None)),
         ("t", TopicModel(columns=data.columns.values, use_semantic_sim=True, use_topics=True,
                          strparser="TfidfVectorizer",
-                         # strparser_params=dict(min_df=5, max_df=1., ngram_range=(1, 2), norm=None, use_idf=False, smooth_idf=False, sublinear_tf=False),
-                         # topics_model="LDA", topics_params=dict(num_topics=200)
                          strparser_params=dict(min_df=5, max_df=1., ngram_range=(1, 2), norm="l2", use_idf=True, smooth_idf=True, sublinear_tf=True),
                          topics_model="TruncatedSVD", topics_params=dict(n_components=150, n_iter=5, random_state=10)
                          ))
     ])
-    # estimator = SVC(C=31.622776601683793, kernel='poly', degree=4, gamma=0.0, coef0=1.0, shrinking=True,
-    #                 probability=False, tol=0.001, class_weight="auto",
-    #                 verbose=False, max_iter=2000000, random_state=0)
-     #RandomForestClassifier(n_estimators=150, max_depth=11, min_samples_leaf=10, random_state=0)
     estimator = SVC(C=10, kernel='rbf', gamma=0.0, coef0=0.0, shrinking=True,
                     probability=False, tol=0.001, class_weight=None,
                     verbose=False, max_iter=2000000, random_state=0)
-    # estimator = GradientBoostingClassifier(n_estimators=150, max_depth=5, min_samples_leaf=10, subsample=0.5, random_state=0)
     cl = Pipeline([("t", dataTransformer),
                    ("s", StandardScaler()),
                    ("e", estimator)])
-#best scores: {'std': 0.00928, 'median': 0.67827, 'mean': 0.67646}
     param_grid = dict(t__m__gamma=[0.5])
-                    #
-                  # dict(e__C=np.logspace(-2, 2, 5), e__ker(1, 3)nel=['rbf'],
-                  #      e__degree=[4], e__gamma=np.logspace(-3, -1, 5))]
-
     grid_search = GridSearch(cl, param_grid=param_grid, scoring=scorer, cv=5, n_jobs=5,
                                verbose=True, refit=True)
     grid_search.fit(data.values, relevance.median_relevance.values)
@@ -891,13 +810,9 @@ if __name__ == "__main__":
     print "actual relevance distr:", np.bincount(relevance.median_relevance.values) / float(relevance.median_relevance.values.size)
     prediction = grid_search.predict(data.values)
     print "pred relevance distr:", np.bincount(prediction) / float(prediction.size)
-    print grid_search.grid_scores_
-    # print "overfit", kappa(relevance.median_relevance.values, prediction, weights="quadratic") - grid_search.best_score_
     cPickle.dump(grid_search.best_estimator_.steps[0][-1].transform(data.values), open("data.pkl", "w"))
-    # cPickle.dump(grid_search, open("grid_search.pkl", "w"))
 
     # SUBMISSION
     prediction = grid_search.predict(test_data.values)
     pred = pd.DataFrame({"id": id_, "prediction": prediction})
     pred.to_csv("submission.txt", index=False)
-# mean: 0.65842, std: 0.01080
